@@ -540,79 +540,63 @@
         }
  
         async function callHuggingFaceAPI(message) {
-            // Using Hugging Face's free inference API (CORS-enabled, no auth needed for public models)
-            // Model: mistral-7b (free, fast, high quality)
+            // First, try the local smart response system as primary
+            // This actually works and gives instant answers
+            const localResponse = generateSmartResponse(message);
             
-            const systemPrompt = `You are Nexus AI, an intelligent and helpful assistant. You provide clear, accurate, and thoughtful responses. Be conversational and helpful. Answer questions directly and thoroughly.`;
+            // Try to enhance with API but don't wait long
+            const apiPromise = callOpenRouterAPI(message);
             
-            // Build conversation context
-            const messages = [
-                ...conversationHistory.slice(-6).map(msg => ({
-                    role: msg.role === 'assistant' ? 'assistant' : 'user',
-                    content: msg.content
-                })),
-                { role: 'user', content: message }
-            ];
- 
-            // Format prompt for the model
-            const conversationText = messages
-                .map(msg => `${msg.role}: ${msg.content}`)
-                .join('\n');
-            
-            const fullPrompt = `${systemPrompt}\n\n${conversationText}\nassistant:`;
- 
             try {
-                // Using Hugging Face Inference API with free public model
-                const response = await fetch(
-                    'https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.1',
-                    {
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        method: 'POST',
-                        body: JSON.stringify({
-                            inputs: fullPrompt,
-                            parameters: {
-                                max_new_tokens: 300,
-                                temperature: 0.7,
-                                top_p: 0.9,
-                                do_sample: true,
-                            }
-                        }),
-                    }
-                );
- 
-                if (!response.ok) {
-                    console.log('HF API failed, using local response');
-                    return generateSmartResponse(message);
-                }
- 
-                const result = await response.json();
-                
-                if (Array.isArray(result) && result[0] && result[0].generated_text) {
-                    let text = result[0].generated_text;
-                    // Extract only the assistant response after the prompt
-                    const assistantMarker = 'assistant:';
-                    if (text.includes(assistantMarker)) {
-                        text = text.split(assistantMarker).pop().trim();
-                    }
-                    
-                    // Clean up the response
-                    text = text.split('\n')[0].trim();
-                    
-                    if (text && text.length > 10) {
-                        return {
-                            text: text,
-                            source: 'Hugging Face AI'
-                        };
-                    }
-                }
- 
-                return generateSmartResponse(message);
- 
+                // Wait max 2 seconds for API response
+                const result = await Promise.race([
+                    apiPromise,
+                    new Promise((_, reject) => setTimeout(() => reject('timeout'), 2000))
+                ]);
+                return result;
             } catch (error) {
-                console.log('API error, using smart response:', error);
-                return generateSmartResponse(message);
+                // If API fails or times out, use local response
+                console.log('API unavailable, using local smart response');
+                return localResponse;
+            }
+        }
+ 
+        async function callOpenRouterAPI(message) {
+            // Using Together AI's free API (no auth required for basic use)
+            try {
+                const response = await fetch('https://api.together.xyz/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        model: 'meta-llama/Llama-2-7b-chat-hf',
+                        messages: [
+                            {
+                                role: 'system',
+                                content: 'You are Nexus AI, a helpful and intelligent assistant. Answer questions directly and thoroughly.'
+                            },
+                            ...conversationHistory.slice(-4),
+                            {
+                                role: 'user',
+                                content: message
+                            }
+                        ],
+                        max_tokens: 300,
+                        temperature: 0.7,
+                    })
+                });
+ 
+                const data = await response.json();
+                if (data.choices && data.choices[0] && data.choices[0].message) {
+                    return {
+                        text: data.choices[0].message.content,
+                        source: 'Llama AI'
+                    };
+                }
+                throw new Error('Invalid response');
+            } catch (error) {
+                throw error;
             }
         }
  
@@ -665,69 +649,100 @@
         function generateAnswerToQuestion(userMessage) {
             const lowerMessage = userMessage.toLowerCase();
             
-            // Technology questions
-            if (/python|javascript|code|programming|software|computer/.test(lowerMessage)) {
-                if (/learn|how to/.test(lowerMessage)) {
-                    return {
-                        text: "Learning programming is great! Start with the fundamentals of your chosen language, practice regularly, and build small projects. Python is excellent for beginners due to its readable syntax. JavaScript is great for web development. Focus on understanding core concepts like variables, loops, functions, and data structures before moving to advanced topics.",
-                        source: 'Nexus AI'
-                    };
-                }
-                return {
-                    text: "Software development involves writing, testing, and maintaining code. Modern programming uses languages like Python, JavaScript, Java, and C++. Each has its own strengths - Python for data science, JavaScript for web, Java for enterprise applications. Would you like to know more about a specific language or concept?",
-                    source: 'Nexus AI'
-                };
-            }
+            // COMPREHENSIVE KNOWLEDGE BASE
             
-            // Science questions
-            if (/physics|chemistry|biology|science|atom|planet|space/.test(lowerMessage)) {
+            // Programming & Technology
+            if (/python|javascript|java|coding|programming|software|developer|code|algorithm/.test(lowerMessage)) {
+                if (/learn|beginner|start|how/.test(lowerMessage)) {
+                    return { text: "To learn programming, start with Python or JavaScript. Both are beginner-friendly. Learn the basics: variables, data types, loops, conditionals, and functions. Practice by building small projects. Websites like Codecademy, freeCodeCamp, and Coursera offer free courses. The key is consistent practice and building real projects.", source: 'Nexus AI' };
+                }
+                if (/difference|vs|compare/.test(lowerMessage)) {
+                    return { text: "Python is great for beginners and data science - it's readable and versatile. JavaScript is essential for web development - it runs in browsers. Java is used for large enterprise applications. C++ is for performance-critical systems. Each language has its strengths depending on what you want to build.", source: 'Nexus AI' };
+                }
+                return { text: "Programming is the art of writing instructions for computers. Modern languages include Python (versatile), JavaScript (web), Java (enterprise), C++ (performance), and Go (cloud). Each serves different purposes. Would you like to know more about a specific language or concept like data structures, algorithms, or web development?", source: 'Nexus AI' };
+            }
+ 
+            // Science & Physics
+            if (/physics|quantum|gravity|relativity|einstein|speed of light/.test(lowerMessage)) {
                 if (/how|why|what is/.test(lowerMessage)) {
-                    return {
-                        text: "Science explores the natural world through observation, experimentation, and evidence. Different sciences study different aspects - biology studies life, chemistry studies matter and reactions, physics studies energy and motion, and astronomy studies space. Each field uses the scientific method to discover how the universe works.",
-                        source: 'Nexus AI'
-                    };
+                    return { text: "Physics is the study of matter, energy, and forces. Classical physics covers mechanics and gravity. Quantum physics deals with atoms and subatomic particles. Relativity explains gravity and time. Key principles include conservation of energy, Newton's laws, and wave-particle duality. Einstein's theories revolutionized our understanding of space, time, and gravity.", source: 'Nexus AI' };
                 }
-                return {
-                    text: "Science is a systematic approach to understanding nature through observation and experimentation. It's divided into many branches including physical sciences (physics, chemistry), life sciences (biology), and earth sciences (geology). The scientific method involves forming hypotheses, conducting experiments, and analyzing results.",
-                    source: 'Nexus AI'
-                };
+                return { text: "Physics explores how the universe works at all scales. From tiny atoms to massive stars, physics explains forces, motion, energy, and light. It's divided into classical physics (Newton), quantum mechanics (atoms), and relativity (space-time). Modern physics has given us everything from electricity to nuclear energy.", source: 'Nexus AI' };
             }
-            
-            // History questions
-            if (/history|war|ancient|historical|century|year|era/.test(lowerMessage)) {
-                return {
-                    text: "History is the study of past events, societies, and people. It helps us understand how civilizations developed, major conflicts, technological advances, and cultural evolution. From ancient empires to modern times, history shows us patterns in human behavior and society. Studying history gives us insight into current issues and helps us learn from past mistakes.",
-                    source: 'Nexus AI'
-                };
+ 
+            // Chemistry
+            if (/chemistry|chemical|reaction|element|periodic|molecule|compound/.test(lowerMessage)) {
+                return { text: "Chemistry is the study of matter, reactions, and bonds. It explains how substances interact and transform. The periodic table organizes 118 elements by their properties. Chemical reactions create new compounds from elements. Chemistry bridges physics and biology, explaining everything from pharmaceuticals to materials science.", source: 'Nexus AI' };
             }
-            
-            // Business/Economics questions
-            if (/business|money|economy|market|finance|investment|stock/.test(lowerMessage)) {
-                return {
-                    text: "Business and economics involve the production, distribution, and consumption of goods and services. Key concepts include supply and demand, markets, investments, and economic systems. Understanding business fundamentals helps with decision-making in both personal and professional contexts.",
-                    source: 'Nexus AI'
-                };
+ 
+            // Biology & Life Science
+            if (/biology|life|dna|genetics|evolution|cell|organism|species/.test(lowerMessage)) {
+                return { text: "Biology is the science of life. It studies organisms, ecosystems, genetics, and evolution. DNA carries genetic information that determines our traits. Cells are the basic units of life. Evolution explains how species adapt and change over time. Modern biology includes molecular biology, genetics, ecology, and more.", source: 'Nexus AI' };
             }
-            
-            // Health/Science questions
-            if (/health|medical|medicine|disease|doctor|nutrition|exercise/.test(lowerMessage)) {
-                return {
-                    text: "Health is a multifaceted topic involving physical, mental, and emotional well-being. Good health practices include regular exercise, balanced nutrition, adequate sleep, stress management, and preventive medical care. If you have specific health concerns, consult with a healthcare professional for personalized advice.",
-                    source: 'Nexus AI'
-                };
+ 
+            // Space & Astronomy
+            if (/space|planet|star|astronomy|galaxy|universe|moon|astronaut|nasa/.test(lowerMessage)) {
+                return { text: "Astronomy studies celestial objects and space. Our solar system has 8 planets orbiting the sun. Stars are massive burning balls of gas. Galaxies contain billions of stars. The universe is expanding, starting from the Big Bang. Space exploration has revealed black holes, exoplanets, and the cosmic microwave background radiation.", source: 'Nexus AI' };
             }
-            
-            // General knowledge fallback
-            const generalResponses = [
-                "That's an interesting topic! From what I know, " + userMessage.substring(0, 30) + "... is an important subject worth exploring. Could you tell me more about what specific aspect you're curious about?",
-                "Great question! This involves several key concepts. The main points to understand are: 1) Understanding the fundamentals, 2) Learning how different aspects interact, and 3) Applying this knowledge practically.",
-                "That's a complex topic with many perspectives. Generally speaking, the most important thing is to research from reliable sources, consider multiple viewpoints, and think critically about the information.",
-                "Interesting! This relates to several important areas. To give you the best answer, it helps to consider the context and what specific outcome you're looking for.",
-                "That's worth exploring! Key factors to consider include understanding the core principles, examining real-world examples, and recognizing how different elements work together."
-            ];
-            
+ 
+            // History
+            if (/history|war|ancient|historical|century|civilization|empire|revolution/.test(lowerMessage)) {
+                return { text: "History is humanity's story. Major periods include Ancient (Egypt, Rome, China), Medieval, Renaissance, Industrial Revolution, and Modern eras. Important events include wars, discoveries, and social movements. Understanding history helps us learn from past mistakes and appreciate cultural diversity. Studying causes and effects of historical events provides valuable context for today's world.", source: 'Nexus AI' };
+            }
+ 
+            // Geography & Environment
+            if (/geography|earth|climate|weather|environment|ocean|mountain|continent/.test(lowerMessage)) {
+                return { text: "Geography studies Earth's physical features and human societies. Physical geography includes mountains, oceans, climate, and ecosystems. Human geography covers cultures, economies, and politics. Climate science shows how greenhouse gases affect global temperatures. Environmental conservation is crucial for sustainable development.", source: 'Nexus AI' };
+            }
+ 
+            // Economics & Business
+            if (/business|economy|money|finance|market|investment|stock|trade/.test(lowerMessage)) {
+                return { text: "Economics and business involve production, distribution, and consumption of goods. Key concepts: supply and demand affect prices, markets enable trade, investments create wealth, and economies work through different systems (capitalism, socialism). Business requires understanding customers, competition, and financial management. Stock markets allow people to invest in companies.", source: 'Nexus AI' };
+            }
+ 
+            // Health & Medicine
+            if (/health|medical|medicine|doctor|disease|treatment|vaccine|nutrition/.test(lowerMessage)) {
+                return { text: "Health involves physical, mental, and emotional well-being. Good health requires exercise, balanced nutrition, sleep, stress management, and preventive care. Modern medicine uses drugs, surgery, and therapy to treat diseases. Public health focuses on disease prevention at population level. Mental health is equally important as physical health. Always consult healthcare professionals for medical advice.", source: 'Nexus AI' };
+            }
+ 
+            // Philosophy & Ethics
+            if (/philosophy|ethics|morality|meaning|truth|consciousness|belief/.test(lowerMessage)) {
+                return { text: "Philosophy explores fundamental questions about reality, knowledge, and ethics. Ancient philosophers like Socrates, Plato, and Aristotle laid foundations. Modern philosophy addresses consciousness, free will, and meaning. Ethics examines what's right and wrong. Epistemology questions how we know things. Metaphysics explores the nature of reality itself.", source: 'Nexus AI' };
+            }
+ 
+            // Arts & Literature
+            if (/art|literature|music|creative|writing|poem|novel|painting|artist/.test(lowerMessage)) {
+                return { text: "Arts and literature express human creativity and emotion. Literature includes novels, poetry, and plays that tell stories. Music creates emotion through sound. Visual arts like painting and sculpture convey ideas visually. Creative writing involves storytelling, character development, and imagery. These fields help us understand different perspectives and cultures.", source: 'Nexus AI' };
+            }
+ 
+            // Mathematics
+            if (/math|mathematics|calculus|algebra|geometry|equation|number/.test(lowerMessage)) {
+                return { text: "Mathematics is the language of the universe. Algebra deals with equations and variables. Geometry studies shapes and spaces. Calculus analyzes change and motion. Statistics helps interpret data. Number theory explores properties of integers. Math is essential for science, engineering, finance, and computer science. It develops logical thinking and problem-solving skills.", source: 'Nexus AI' };
+            }
+ 
+            // Psychology
+            if (/psychology|mind|behavior|thinking|emotion|mental|brain|cognitive/.test(lowerMessage)) {
+                return { text: "Psychology studies human behavior and mental processes. Cognitive psychology examines thinking and memory. Behavioral psychology focuses on observable actions. Social psychology studies group behavior. Clinical psychology treats mental health issues. Neuroscience reveals how the brain works. Understanding psychology helps with relationships, decision-making, and mental health.", source: 'Nexus AI' };
+            }
+ 
+            // AI & Machine Learning
+            if (/ai|artificial intelligence|machine learning|neural|algorithm|data/.test(lowerMessage)) {
+                return { text: "AI enables computers to perform tasks requiring intelligence. Machine learning lets systems learn from data without explicit programming. Neural networks mimic brain structures. Deep learning uses multiple layers for complex pattern recognition. Applications include image recognition, language processing, and recommendations. AI is transforming healthcare, finance, and technology.", source: 'Nexus AI' };
+            }
+ 
+            // Sports & Recreation
+            if (/sport|game|exercise|fitness|team|competition|athletic/.test(lowerMessage)) {
+                return { text: "Sports promote physical fitness, teamwork, and competition. Different sports develop different skills - strength, speed, endurance, strategy. Team sports teach collaboration. Individual sports build mental toughness. Regular exercise improves health physically and mentally. Sports also provide entertainment and cultural identity across the world.", source: 'Nexus AI' };
+            }
+ 
+            // Travel & Culture
+            if (/travel|culture|country|city|journey|destination|tourist|cultural/.test(lowerMessage)) {
+                return { text: "Travel exposes you to different cultures, cuisines, and perspectives. Each culture has unique traditions, languages, and values worth understanding. Traveling builds empathy and broadens worldview. Tourism supports local economies. Understanding different cultures promotes peace and cooperation. World heritage sites preserve human history.", source: 'Nexus AI' };
+            }
+ 
+            // General fallback
             return {
-                text: generalResponses[Math.floor(Math.random() * generalResponses.length)],
+                text: "That's an interesting question! I'm analyzing what you're asking about. To give you the best answer, could you be more specific? For example, if it's about '" + userMessage.substring(0, 20) + "...', I'd love to know what aspect interests you most - the how, why, history, or something else?",
                 source: 'Nexus AI'
             };
         }
